@@ -18,7 +18,6 @@ package org.gradle.api.internal.artifacts.repositories;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
-import groovy.lang.Closure;
 import org.gradle.api.Action;
 import org.gradle.api.InvalidUserDataException;
 import org.gradle.api.artifacts.ComponentMetadataListerDetails;
@@ -27,7 +26,6 @@ import org.gradle.api.artifacts.repositories.AuthenticationContainer;
 import org.gradle.api.artifacts.repositories.IvyArtifactRepository;
 import org.gradle.api.artifacts.repositories.IvyArtifactRepositoryMetaDataProvider;
 import org.gradle.api.artifacts.repositories.IvyPatternRepositoryLayout;
-import org.gradle.api.artifacts.repositories.RepositoryLayout;
 import org.gradle.api.internal.FeaturePreviews;
 import org.gradle.api.internal.artifacts.ImmutableModuleIdentifierFactory;
 import org.gradle.api.internal.artifacts.ivyservice.IvyContextManager;
@@ -70,8 +68,6 @@ import org.gradle.internal.reflect.Instantiator;
 import org.gradle.internal.resource.local.FileResourceRepository;
 import org.gradle.internal.resource.local.FileStore;
 import org.gradle.internal.resource.local.LocallyAvailableResourceFinder;
-import org.gradle.util.ConfigureUtil;
-import org.gradle.util.DeprecationLogger;
 
 import java.net.URI;
 import java.util.ArrayList;
@@ -300,29 +296,11 @@ public class DefaultIvyArtifactRepository extends AbstractAuthenticationSupporte
                 layout = instantiator.newInstance(MavenRepositoryLayout.class);
                 break;
             case "pattern":
-                layout = instantiator.newInstance(DefaultIvyPatternRepositoryLayout.class);
-                break;
+                throw new IllegalArgumentException("'layout(\"pattern\")' is no longer supported, use method 'patternLayout(Action)' instead");
             default:
                 layout = instantiator.newInstance(GradleRepositoryLayout.class);
                 break;
         }
-    }
-
-    @Override
-    public void layout(String layoutName, Closure config) {
-        DeprecationLogger.nagUserOfReplacedMethod("IvyArtifactRepository.layout(String, Closure)", "IvyArtifactRepository.patternLayout(Action)");
-        internalLayout(layoutName, ConfigureUtil.<RepositoryLayout>configureUsing(config));
-    }
-
-    @Override
-    public void layout(String layoutName, Action<? extends RepositoryLayout> config) {
-        DeprecationLogger.nagUserOfReplacedMethod("IvyArtifactRepository.layout(String, Action)", "IvyArtifactRepository.patternLayout(Action)");
-        internalLayout(layoutName, config);
-    }
-
-    private void internalLayout(String layoutName, Action config) {
-        layout(layoutName);
-        config.execute(layout);
     }
 
     @Override
