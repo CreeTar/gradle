@@ -48,7 +48,7 @@ public class TransformationStep implements Transformation, TaskDependencyContain
     public static final Equivalence<? super TransformationStep> FOR_SCHEDULING = Equivalence.identity();
 
     private final Transformer transformer;
-    private final TransformerInvoker transformerInvoker;
+    private final TransformerInvocationFactory transformerInvocationFactory;
     private final DomainObjectProjectStateHandler projectStateHandler;
     private final ProjectStateRegistry.SafeExclusiveLock isolationLock;
     private final WorkNodeAction isolateAction;
@@ -56,9 +56,9 @@ public class TransformationStep implements Transformation, TaskDependencyContain
     private final FileCollectionFingerprinterRegistry globalFingerprinterRegistry;
     private final AtomicReference<FileCollectionFingerprinterRegistry> usedFingerprinterRegistry = new AtomicReference<>();
 
-    public TransformationStep(Transformer transformer, TransformerInvoker transformerInvoker, DomainObjectProjectStateHandler projectStateHandler, FileCollectionFingerprinterRegistry globalFingerprinterRegistry) {
+    public TransformationStep(Transformer transformer, TransformerInvocationFactory transformerInvocationFactory, DomainObjectProjectStateHandler projectStateHandler, FileCollectionFingerprinterRegistry globalFingerprinterRegistry) {
         this.transformer = transformer;
-        this.transformerInvoker = transformerInvoker;
+        this.transformerInvocationFactory = transformerInvocationFactory;
         this.projectStateHandler = projectStateHandler;
         this.globalFingerprinterRegistry = globalFingerprinterRegistry;
         this.isolationLock = projectStateHandler.newExclusiveOperationLock();
@@ -99,26 +99,28 @@ public class TransformationStep implements Transformation, TaskDependencyContain
         isolateTransformerParameters(fingerprinterRegistry);
 
         Try<ArtifactTransformDependencies> resolvedDependencies = dependenciesResolver.forTransformer(transformer);
-        return resolvedDependencies.getSuccessfulOrElse(dependencies -> {
-            ImmutableList<File> inputArtifacts = subjectToTransform.getFiles();
-            if (inputArtifacts.isEmpty()) {
-                return CacheableInvocation.cached(Try.successful(subjectToTransform.createSubjectFromResult(ImmutableList.of())));
-            } else if (inputArtifacts.size() > 1) {
-                return CacheableInvocation.nonCached(() ->
+        return resolvedDependencies
+            .map(dependencies -> {
+                ImmutableList<File> inputArtifacts = subjectToTransform.getFiles();
+                if (inputArtifacts.isEmpty()) {
+                    return CacheableInvocation.cached(Try.successful(subjectToTransform.createSubjectFromResult(ImmutableList.of())));
+                } else if (inputArtifacts.size() > 1) {
+                    return CacheableInvocation.nonCached(() ->
                         doTransform(subjectToTransform, fingerprinterRegistry, dependencies, inputArtifacts)
-                );
-            } else {
-                File inputArtifact = inputArtifacts.iterator().next();
-                return transformerInvoker.createInvocation(transformer, inputArtifact, dependencies, subjectToTransform, fingerprinterRegistry)
-                    .map(subjectToTransform::createSubjectFromResult);
-            }
-        }, failure -> CacheableInvocation.cached(Try.failure(failure)));
+                    );
+                } else {
+                    File inputArtifact = inputArtifacts.iterator().next();
+                    return transformerInvocationFactory.createInvocation(transformer, inputArtifact, dependencies, subjectToTransform, fingerprinterRegistry)
+                        .map(subjectToTransform::createSubjectFromResult);
+                }
+            })
+            .getOrMapFailure(failure -> CacheableInvocation.cached(Try.failure(failure)));
     }
 
     private Try<TransformationSubject> doTransform(TransformationSubject subjectToTransform, FileCollectionFingerprinterRegistry fingerprinterRegistry, ArtifactTransformDependencies dependencies, ImmutableList<File> inputArtifacts) {
         ImmutableList.Builder<File> builder = ImmutableList.builder();
         for (File inputArtifact : inputArtifacts) {
-            Try<ImmutableList<File>> result = transformerInvoker.createInvocation(transformer, inputArtifact, dependencies, subjectToTransform, fingerprinterRegistry).invoke();
+            Try<ImmutableList<File>> result = transformerInvocationFactory.createInvocation(transformer, inputArtifact, dependencies, subjectToTransform, fingerprinterRegistry).invoke();
 
             if (result.getFailure().isPresent()) {
                 return Try.failure(result.getFailure().get());

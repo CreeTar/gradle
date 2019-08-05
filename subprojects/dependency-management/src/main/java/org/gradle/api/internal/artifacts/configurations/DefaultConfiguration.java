@@ -36,7 +36,6 @@ import org.gradle.api.artifacts.DependencyConstraintSet;
 import org.gradle.api.artifacts.DependencyResolutionListener;
 import org.gradle.api.artifacts.DependencySet;
 import org.gradle.api.artifacts.ExcludeRule;
-import org.gradle.api.artifacts.FileCollectionDependency;
 import org.gradle.api.artifacts.PublishArtifact;
 import org.gradle.api.artifacts.PublishArtifactSet;
 import org.gradle.api.artifacts.ResolutionStrategy;
@@ -69,6 +68,7 @@ import org.gradle.api.internal.artifacts.dependencies.DefaultDependencyConstrain
 import org.gradle.api.internal.artifacts.dsl.dependencies.ProjectFinder;
 import org.gradle.api.internal.artifacts.ivyservice.DefaultLenientConfiguration;
 import org.gradle.api.internal.artifacts.ivyservice.ResolvedArtifactCollectingVisitor;
+import org.gradle.api.internal.artifacts.ivyservice.ResolvedFileCollectionVisitor;
 import org.gradle.api.internal.artifacts.ivyservice.ResolvedFilesCollectingVisitor;
 import org.gradle.api.internal.artifacts.ivyservice.moduleconverter.RootComponentMetadataBuilder;
 import org.gradle.api.internal.artifacts.ivyservice.resolveengine.artifact.SelectedArtifactSet;
@@ -83,11 +83,9 @@ import org.gradle.api.internal.attributes.ImmutableAttributesFactory;
 import org.gradle.api.internal.collections.DomainObjectCollectionFactory;
 import org.gradle.api.internal.file.AbstractFileCollection;
 import org.gradle.api.internal.file.FileCollectionFactory;
-import org.gradle.api.internal.file.FileCollectionInternal;
-import org.gradle.api.internal.file.FileSystemSubset;
+import org.gradle.api.internal.file.FileCollectionStructureVisitor;
 import org.gradle.api.internal.project.ProjectInternal;
 import org.gradle.api.internal.project.ProjectStateRegistry;
-import org.gradle.api.internal.tasks.AbstractTaskDependency;
 import org.gradle.api.internal.tasks.FailureCollectingTaskDependencyResolveContext;
 import org.gradle.api.internal.tasks.TaskDependencyResolveContext;
 import org.gradle.api.internal.tasks.WorkNodeAction;
@@ -215,7 +213,7 @@ public class DefaultConfiguration extends AbstractFileCollection implements Conf
     private AttributeContainerInternal configurationAttributes;
     private final DomainObjectContext domainObjectContext;
     private final ImmutableAttributesFactory attributesFactory;
-    private final FileCollection intrinsicFiles;
+    private final ConfigurationFileCollection intrinsicFiles;
 
     private final DisplayName displayName;
     private UserCodeApplicationContext userCodeApplicationContext;
@@ -273,7 +271,7 @@ public class DefaultConfiguration extends AbstractFileCollection implements Conf
 
         displayName = Describables.memoize(new ConfigurationDescription(identityPath));
 
-        this.ownDependencies = (DefaultDomainObjectSet<Dependency>)domainObjectCollectionFactory.newDomainObjectSet(Dependency.class);
+        this.ownDependencies = (DefaultDomainObjectSet<Dependency>) domainObjectCollectionFactory.newDomainObjectSet(Dependency.class);
         this.ownDependencies.beforeCollectionChanges(validateMutationType(this, MutationType.DEPENDENCIES));
         this.ownDependencyConstraints = (DefaultDomainObjectSet<DependencyConstraint>) domainObjectCollectionFactory.newDomainObjectSet(DependencyConstraint.class);
         this.ownDependencyConstraints.beforeCollectionChanges(validateMutationType(this, MutationType.DEPENDENCIES));
@@ -281,7 +279,7 @@ public class DefaultConfiguration extends AbstractFileCollection implements Conf
         this.dependencies = new DefaultDependencySet(Describables.of(displayName, "dependencies"), this, ownDependencies);
         this.dependencyConstraints = new DefaultDependencyConstraintSet(Describables.of(displayName, "dependency constraints"), ownDependencyConstraints);
 
-        this.ownArtifacts = (DefaultDomainObjectSet<PublishArtifact>)domainObjectCollectionFactory.newDomainObjectSet(PublishArtifact.class);
+        this.ownArtifacts = (DefaultDomainObjectSet<PublishArtifact>) domainObjectCollectionFactory.newDomainObjectSet(PublishArtifact.class);
         this.ownArtifacts.beforeCollectionChanges(validateMutationType(this, MutationType.ARTIFACTS));
 
         this.artifacts = new DefaultPublishArtifactSet(Describables.of(displayName, "artifacts"), ownArtifacts, fileCollectionFactory);
@@ -489,6 +487,11 @@ public class DefaultConfiguration extends AbstractFileCollection implements Conf
     @Override
     public Set<File> getFiles() {
         return intrinsicFiles.getFiles();
+    }
+
+    @Override
+    public void visitStructure(FileCollectionStructureVisitor visitor) {
+        intrinsicFiles.visitStructure(visitor);
     }
 
     @Override
@@ -736,9 +739,9 @@ public class DefaultConfiguration extends AbstractFileCollection implements Conf
     }
 
     @Override
-    public TaskDependency getBuildDependencies() {
+    public void visitDependencies(TaskDependencyResolveContext context) {
         assertIsResolvable();
-        return intrinsicFiles.getBuildDependencies();
+        context.add(intrinsicFiles);
     }
 
     /**
@@ -1210,9 +1213,15 @@ public class DefaultConfiguration extends AbstractFileCollection implements Conf
         }
 
         @Override
-        public TaskDependency getBuildDependencies() {
+        public void visitDependencies(TaskDependencyResolveContext context) {
             assertIsResolvable();
-            return new ConfigurationTaskDependency(dependencySpec, viewAttributes, componentSpec, allowNoMatchingVariants, lenient);
+            ResolverResults results = resolveGraphForBuildDependenciesIfRequired();
+            SelectedArtifactSet selected = results.getVisitedArtifacts().select(dependencySpec, viewAttributes, componentSpec, allowNoMatchingVariants);
+            FailureCollectingTaskDependencyResolveContext collectingContext = new FailureCollectingTaskDependencyResolveContext(context);
+            selected.visitDependencies(collectingContext);
+            if (!lenient) {
+                rethrowFailure("task dependencies", collectingContext.getFailures());
+            }
         }
 
         public Spec<? super Dependency> getDependencySpec() {
@@ -1227,13 +1236,22 @@ public class DefaultConfiguration extends AbstractFileCollection implements Conf
         @Override
         public Set<File> getFiles() {
             ResolvedFilesCollectingVisitor visitor = new ResolvedFilesCollectingVisitor();
+            visitFiles(visitor);
+            return visitor.getFiles();
+        }
+
+        @Override
+        public void visitStructure(FileCollectionStructureVisitor visitor) {
+            ResolvedFilesCollectingVisitor collectingVisitor = new ResolvedFileCollectionVisitor(visitor);
+            visitFiles(collectingVisitor);
+        }
+
+        private void visitFiles(ResolvedFilesCollectingVisitor visitor) {
             getSelectedArtifacts().visitArtifacts(visitor, lenient);
 
             if (!lenient) {
                 rethrowFailure("files", visitor.getFailures());
             }
-
-            return visitor.getFiles();
         }
 
         private SelectedArtifactSet getSelectedArtifacts() {
@@ -1262,17 +1280,6 @@ public class DefaultConfiguration extends AbstractFileCollection implements Conf
         if (!canBeResolved) {
             throw new IllegalStateException("Resolving configuration '" + name + "' directly is not allowed");
         }
-    }
-
-    @Override
-    public void registerWatchPoints(FileSystemSubset.Builder builder) {
-        for (Dependency dependency : getAllDependencies()) {
-            if (dependency instanceof FileCollectionDependency) {
-                FileCollection files = ((FileCollectionDependency) dependency).getFiles();
-                ((FileCollectionInternal) files).registerWatchPoints(builder);
-            }
-        }
-        super.registerWatchPoints(builder);
     }
 
     @Override
@@ -1710,33 +1717,6 @@ public class DefaultConfiguration extends AbstractFileCollection implements Conf
 
             if (!lenient) {
                 rethrowFailure("artifacts", failures);
-            }
-        }
-    }
-
-    private class ConfigurationTaskDependency extends AbstractTaskDependency {
-        private final Spec<? super Dependency> dependencySpec;
-        private final AttributeContainerInternal requestedAttributes;
-        private final Spec<? super ComponentIdentifier> componentIdentifierSpec;
-        private final boolean lenient;
-        private final boolean allowNoMatchingVariants;
-
-        ConfigurationTaskDependency(Spec<? super Dependency> dependencySpec, AttributeContainerInternal requestedAttributes, Spec<? super ComponentIdentifier> componentIdentifierSpec, boolean allowNoMatchingVariants, boolean lenient) {
-            this.dependencySpec = dependencySpec;
-            this.requestedAttributes = requestedAttributes;
-            this.componentIdentifierSpec = componentIdentifierSpec;
-            this.allowNoMatchingVariants = allowNoMatchingVariants;
-            this.lenient = lenient;
-        }
-
-        @Override
-        public void visitDependencies(final TaskDependencyResolveContext context) {
-            ResolverResults results = resolveGraphForBuildDependenciesIfRequired();
-            SelectedArtifactSet selected = results.getVisitedArtifacts().select(dependencySpec, requestedAttributes, componentIdentifierSpec, allowNoMatchingVariants);
-            FailureCollectingTaskDependencyResolveContext collectingContext = new FailureCollectingTaskDependencyResolveContext(context);
-            selected.visitDependencies(collectingContext);
-            if (!lenient) {
-                rethrowFailure("task dependencies", collectingContext.getFailures());
             }
         }
     }

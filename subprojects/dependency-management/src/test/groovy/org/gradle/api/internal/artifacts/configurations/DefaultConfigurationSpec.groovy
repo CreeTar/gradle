@@ -43,13 +43,13 @@ import org.gradle.api.internal.DomainObjectContext
 import org.gradle.api.internal.artifacts.ConfigurationResolver
 import org.gradle.api.internal.artifacts.DefaultExcludeRule
 import org.gradle.api.internal.artifacts.DefaultResolverResults
-import org.gradle.api.internal.artifacts.ImmutableModuleIdentifierFactory
 import org.gradle.api.internal.artifacts.ResolverResults
 import org.gradle.api.internal.artifacts.dependencies.DefaultExternalModuleDependency
 import org.gradle.api.internal.artifacts.dsl.dependencies.ProjectFinder
 import org.gradle.api.internal.artifacts.ivyservice.DefaultLenientConfiguration
 import org.gradle.api.internal.artifacts.ivyservice.moduleconverter.RootComponentMetadataBuilder
 import org.gradle.api.internal.artifacts.ivyservice.resolveengine.artifact.ArtifactVisitor
+import org.gradle.api.internal.artifacts.ivyservice.resolveengine.artifact.ResolvableArtifact
 import org.gradle.api.internal.artifacts.ivyservice.resolveengine.artifact.SelectedArtifactSet
 import org.gradle.api.internal.artifacts.ivyservice.resolveengine.artifact.VisitedArtifactSet
 import org.gradle.api.internal.artifacts.ivyservice.resolveengine.projectresult.ResolvedLocalComponentsResult
@@ -94,7 +94,6 @@ class DefaultConfigurationSpec extends Specification {
     def projectAccessListener = Mock(ProjectAccessListener)
     def projectFinder = Mock(ProjectFinder)
     def immutableAttributesFactory = AttributeTestUtil.attributesFactory()
-    def moduleIdentifierFactory = Mock(ImmutableModuleIdentifierFactory)
     def rootComponentMetadataBuilder = Mock(RootComponentMetadataBuilder)
     def projectStateRegistry = Mock(ProjectStateRegistry)
     def projectState = Mock(ProjectState)
@@ -476,7 +475,13 @@ class DefaultConfigurationSpec extends Specification {
         def visitedArtifactSet = Stub(VisitedArtifactSet)
 
         _ * visitedArtifactSet.select(_, _, _, _) >> Stub(SelectedArtifactSet) {
-            visitArtifacts(_, _) >> { ArtifactVisitor visitor, boolean l -> files.each { visitor.visitFile(null, null, null, it) } }
+            visitArtifacts(_, _) >> { ArtifactVisitor visitor, boolean l ->
+                files.each {
+                    def artifact = Stub(ResolvableArtifact)
+                    _ * artifact.file >> it
+                    visitor.visitArtifact(null, null, artifact)
+                }
+            }
         }
 
         _ * localComponentsResult.resolvedProjectConfigurations >> Collections.emptySet()
@@ -538,7 +543,7 @@ class DefaultConfigurationSpec extends Specification {
 
         then:
         configuration.allArtifacts.files.files == [artifact1.file, artifact2.file] as Set
-        configuration.allArtifacts.files.buildDependencies == configuration.allArtifacts.buildDependencies
+        configuration.allArtifacts.files.buildDependencies.getDependencies(Mock(Task)) == [artifactTask1, artifactTask2] as Set
         configuration.allArtifacts.buildDependencies.getDependencies(Mock(Task)) == [artifactTask1, artifactTask2] as Set
     }
 

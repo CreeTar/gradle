@@ -1,4 +1,4 @@
-// Copyright 2018 the original author or authors.
+// Copyright 2019 the original author or authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,9 +13,9 @@
 // limitations under the License.
 
 [[upgrading_version_5]]
-= Upgrading your build from Gradle 5.x
+= Upgrading your build from Gradle 5.x to 6.0
 
-This chapter provides the information you need to migrate your Gradle 5.x builds to Gradle {gradleVersion}. For migrating from Gradle 4.x, complete the <<upgrading_version_4.adoc#upgrading_version_4, 4.x to 5.0 guide>> first.
+This chapter provides the information you need to migrate your Gradle 5.x builds to Gradle 6.0. For migrating from Gradle 4.x, complete the <<upgrading_version_4.adoc#upgrading_version_4, 4.x to 5.0 guide>> first.
 
 We recommend the following steps for all users:
 
@@ -32,6 +32,48 @@ Some plugins will break with this new version of Gradle, for example because the
 +
 . Run `gradle wrapper --gradle-version {gradleVersion}` to update the project to {gradleVersion}.
 . Try to run the project and debug any errors using the <<troubleshooting.adoc#troubleshooting, Troubleshooting Guide>>.
+
+[[changes_6.0]]
+== Upgrading from 5.6 and earlier
+
+=== Deprecations
+
+==== Local build cache type shouldn't be specified
+
+When configuring the local build cache the use of `BuildCacheConfiguration.local(Class)` and `local(Class, Action)` has now been deprecated; use `getLocal()` or `local(Action)` instead.
+These methods now assume the local build cache type to be `DirectoryBuildCache`.
+
+=== Potential breaking changes
+
+==== Local build cache is always a directory cache
+
+In the past it was possible to use any build cache implementation as the `local` cache.
+This is not allowed anymore as the local cache is always a `DirectoryBuildCache`.
+Calls to `BuildCacheConfiguration.local(Class)` with anything other than `DirectoryBuildCache` as the type will fail the build.
+Use `getLocal()` and `local(Action)` instead.
+These methods now assume the local build cache type to be `DirectoryBuildCache`.
+
+==== Failing to pack or unpack cached results will now fail the build
+
+In the past when Gradle encountered a problem while packaging the results of a cached task, it would ignore the problem and try to continue running the build.
+Similarly, having encountered a corrupt cached artifact during unpacking Gradle would try to remove whatever was already unpacked of the output and re-execute the task to make sure the build had a chance to succeed.
+
+While this behavior could be helpful to maintain executing build no matter what, hiding the problems this way can lead to reduced cache performance.
+In Gradle 6.0 we are switching to failing fast, and both pack and unpack errors will result the build to fail.
+Doing so allows these problems to be surfaced more easily.
+
+==== `@Nullable` annotation is gone
+
+The `org.gradle.api.Nullable` annotation type has been removed. Use `javax.annotation.Nullable` from JSR-305 instead.
+
+==== Task validation changes
+
+- `ValidateTaskProperties.setClasses()` is now removed. Use `getClasses().setFrom()` instead.
+- `ValidateTaskProperties.setClasspath()` is now removed. use `getClasspath().setFrom()` instead.
+
+==== The OSGI plugin has been removed
+
+The deprecated OSGI plugin has been removed.  There are a number of community-provided OSGI plugins available on the link:https://plugins.gradle.org[Gradle Plugin Portal].
 
 [[changes_5.6]]
 == Upgrading from 5.5 and earlier
@@ -136,12 +178,11 @@ configurations.all {
 }
 ```
 
+See <<controlling_transitive_dependencies.adoc#sec:capabilities, the capabilities section of the documentation>> for more options.
+
 === Disabled debug argument parsing in JavaExec
 
 Gradle 5.6 introduced a new DSL element (`JavaForkOptions.debugOptions(Action<JavaDebugOptions>)`) to configure debug properties for forked Java processes. Due to this change, Gradle no longer parses debug-related JVM arguments. Consequently, `JavaForkOptions.getDebu()` no longer returns `true` if the `-Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=5005` or the `-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005` argument is specified to the process.
-
-
-See <<managing_transitive_dependencies.adoc#sec:capabilities, the capabilities section of the documentation>> for more options.
 
 [[changes_5.5]]
 == Upgrading from 5.4 and earlier
@@ -341,11 +382,33 @@ This may break plugins that relied on the previous behaviour.
 
 The incubating `operatingSystems` property on native components has been replaced with the link:{javadocPath}/org/gradle/language/cpp/CppComponent.html#getTargetMachines()[targetMachines] property.
 
-==== Change in behavior for tasks extending `AbstractArchiveTask` or subtypes (`Zip`, `Jar`, `War`, `Ear`, `Tar`)
+==== Changes for archive tasks (`Zip`, `Jar`, `War`, `Ear`, `Tar`)
 
-The `AbstractArchiveTask` has several new properties using the <<lazy_configuration.adoc#provider-files-api-reference,Provider API>>. Plugins that extend these types and override methods from the base class may no longer behave the same way. Internally, `AbstractArchiveTask` prefers the new properties and methods like `getArchiveName()` are façades over the new properties.
+===== Change in behavior for tasks extending `AbstractArchiveTask`
+
+The `AbstractArchiveTask` has several new properties using the <<lazy_configuration.adoc#sec:lazy_configuration_reference,Provider API>>.
+Plugins that extend these types and override methods from the base class may no longer behave the same way.
+Internally, `AbstractArchiveTask` prefers the new properties and methods like `getArchiveName()` are façades over the new properties.
 
 If your plugin/build only uses these types (and does not extend them), nothing has changed.
+
+===== Archive tasks fail on duplicate files
+
+Until now archive tasks defaulted to the `INCLUDE` duplicates strategy, allowing the same path to exist multiple times in an archive.
+
+In Gradle 6.0 we are switching to `FAIL`, prohibiting duplicate files in archives.
+If you still want to allow them, you can be specify that explicitly:
+
+```
+task archive(type: Zip) {
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE // allow duplicates
+    archiveName = 'archive.zip'
+    from 'src'
+}
+```
+
+*Note* that `Copy` and `Sync` tasks are unaffected: they still use the `INCLUDE` duplicates strategy as default.
+
 
 ////
 == Changes in detail

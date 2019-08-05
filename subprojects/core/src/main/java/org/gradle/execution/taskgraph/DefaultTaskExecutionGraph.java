@@ -29,7 +29,6 @@ import org.gradle.api.execution.TaskExecutionGraph;
 import org.gradle.api.execution.TaskExecutionGraphListener;
 import org.gradle.api.execution.TaskExecutionListener;
 import org.gradle.api.internal.GradleInternal;
-import org.gradle.api.internal.project.ProjectInternal;
 import org.gradle.api.internal.project.ProjectStateRegistry;
 import org.gradle.api.specs.Spec;
 import org.gradle.api.specs.Specs;
@@ -53,6 +52,7 @@ import org.gradle.internal.operations.CurrentBuildOperationRef;
 import org.gradle.internal.operations.RunnableBuildOperation;
 import org.gradle.internal.resources.ResourceLockCoordinationService;
 import org.gradle.internal.resources.ResourceLockState;
+import org.gradle.internal.resources.SharedResourceLeaseRegistry;
 import org.gradle.internal.time.Time;
 import org.gradle.internal.time.Timer;
 import org.gradle.internal.work.WorkerLeaseService;
@@ -99,7 +99,8 @@ public class DefaultTaskExecutionGraph implements TaskExecutionGraphInternal {
         TaskNodeFactory taskNodeFactory,
         TaskDependencyResolver dependencyResolver,
         ListenerBroadcast<TaskExecutionGraphListener> graphListeners,
-        ListenerBroadcast<TaskExecutionListener> taskListeners
+        ListenerBroadcast<TaskExecutionListener> taskListeners,
+        SharedResourceLeaseRegistry sharedResourceLeaseRegistry
     ) {
         this.planExecutor = planExecutor;
         this.nodeExecutors = nodeExecutors;
@@ -109,7 +110,7 @@ public class DefaultTaskExecutionGraph implements TaskExecutionGraphInternal {
         this.gradleInternal = gradleInternal;
         this.graphListeners = graphListeners;
         this.taskListeners = taskListeners;
-        this.executionPlan = new DefaultExecutionPlan(workerLeaseService, gradleInternal, taskNodeFactory, dependencyResolver);
+        this.executionPlan = new DefaultExecutionPlan(workerLeaseService, gradleInternal, taskNodeFactory, dependencyResolver, sharedResourceLeaseRegistry);
     }
 
     @Override
@@ -140,6 +141,12 @@ public class DefaultTaskExecutionGraph implements TaskExecutionGraphInternal {
         graphState = GraphState.DIRTY;
 
         LOGGER.debug("Timing: Creating the DAG took " + clock.getElapsed());
+    }
+
+    @Override
+    public void addNodes(Collection<? extends Node> nodes) {
+        executionPlan.addNodes(nodes);
+        graphState = GraphState.DIRTY;
     }
 
     @Override
@@ -290,6 +297,11 @@ public class DefaultTaskExecutionGraph implements TaskExecutionGraphInternal {
     }
 
     @Override
+    public List<Node> getScheduledWork() {
+        return executionPlan.getScheduledNodes();
+    }
+
+    @Override
     public Set<Task> getDependencies(Task task) {
         ensurePopulated();
         Node node = executionPlan.getNode(task);
@@ -376,11 +388,6 @@ public class DefaultTaskExecutionGraph implements TaskExecutionGraphInternal {
             was necessary, therefore the minimal change solution was implemented.
          */
         return executionPlan.getFilteredTasks();
-    }
-
-    @Override
-    public ProjectInternal getRootProject() {
-        return gradleInternal.getRootProject();
     }
 
     private static class NotifyTaskGraphWhenReady implements RunnableBuildOperation {

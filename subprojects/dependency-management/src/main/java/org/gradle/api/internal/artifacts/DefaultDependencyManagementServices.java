@@ -62,7 +62,6 @@ import org.gradle.api.internal.artifacts.ivyservice.ivyresolve.strategy.VersionS
 import org.gradle.api.internal.artifacts.ivyservice.moduleconverter.LocalComponentMetadataBuilder;
 import org.gradle.api.internal.artifacts.ivyservice.moduleconverter.dependencies.LocalConfigurationMetadataBuilder;
 import org.gradle.api.internal.artifacts.ivyservice.resolveengine.artifact.ResolvedArtifactSet;
-import org.gradle.api.internal.attributes.AttributeDesugaring;
 import org.gradle.api.internal.artifacts.ivyservice.resolveengine.result.AttributeContainerSerializer;
 import org.gradle.api.internal.artifacts.ivyservice.resolveengine.store.ResolutionResultsStoreFactory;
 import org.gradle.api.internal.artifacts.mvnsettings.LocalMavenRepositoryLocator;
@@ -78,7 +77,7 @@ import org.gradle.api.internal.artifacts.transform.ArtifactTransformParameterSch
 import org.gradle.api.internal.artifacts.transform.ConsumerProvidedVariantFinder;
 import org.gradle.api.internal.artifacts.transform.DefaultArtifactTransforms;
 import org.gradle.api.internal.artifacts.transform.DefaultTransformationRegistrationFactory;
-import org.gradle.api.internal.artifacts.transform.DefaultTransformerInvoker;
+import org.gradle.api.internal.artifacts.transform.DefaultTransformerInvocationFactory;
 import org.gradle.api.internal.artifacts.transform.DefaultVariantTransformRegistry;
 import org.gradle.api.internal.artifacts.transform.DomainObjectProjectStateHandler;
 import org.gradle.api.internal.artifacts.transform.ExecutionGraphDependenciesResolver;
@@ -89,9 +88,10 @@ import org.gradle.api.internal.artifacts.transform.Transformation;
 import org.gradle.api.internal.artifacts.transform.TransformationNode;
 import org.gradle.api.internal.artifacts.transform.TransformationNodeRegistry;
 import org.gradle.api.internal.artifacts.transform.TransformationRegistrationFactory;
-import org.gradle.api.internal.artifacts.transform.TransformerInvoker;
+import org.gradle.api.internal.artifacts.transform.TransformerInvocationFactory;
 import org.gradle.api.internal.artifacts.type.ArtifactTypeRegistry;
 import org.gradle.api.internal.artifacts.type.DefaultArtifactTypeRegistry;
+import org.gradle.api.internal.attributes.AttributeDesugaring;
 import org.gradle.api.internal.attributes.AttributesSchemaInternal;
 import org.gradle.api.internal.attributes.DefaultAttributesSchema;
 import org.gradle.api.internal.attributes.ImmutableAttributesFactory;
@@ -117,12 +117,11 @@ import org.gradle.internal.component.external.model.JavaEcosystemVariantDerivati
 import org.gradle.internal.component.external.model.ModuleComponentArtifactMetadata;
 import org.gradle.internal.component.model.ComponentAttributeMatcher;
 import org.gradle.internal.event.ListenerManager;
-import org.gradle.internal.execution.AfterPreviousExecutionContext;
 import org.gradle.internal.execution.BeforeExecutionContext;
 import org.gradle.internal.execution.CachingContext;
 import org.gradle.internal.execution.CachingResult;
 import org.gradle.internal.execution.ExecutionOutcome;
-import org.gradle.internal.execution.InputChangesContext;
+import org.gradle.internal.execution.ExecutionRequestContext;
 import org.gradle.internal.execution.OutputChangeListener;
 import org.gradle.internal.execution.Step;
 import org.gradle.internal.execution.UnitOfWork;
@@ -140,17 +139,20 @@ import org.gradle.internal.execution.steps.CatchExceptionStep;
 import org.gradle.internal.execution.steps.CleanupOutputsStep;
 import org.gradle.internal.execution.steps.CreateOutputsStep;
 import org.gradle.internal.execution.steps.ExecuteStep;
+import org.gradle.internal.execution.steps.LoadExecutionStateStep;
 import org.gradle.internal.execution.steps.ResolveChangesStep;
 import org.gradle.internal.execution.steps.ResolveInputChangesStep;
 import org.gradle.internal.execution.steps.SkipUpToDateStep;
 import org.gradle.internal.execution.steps.SnapshotOutputsStep;
-import org.gradle.internal.execution.steps.StoreSnapshotsStep;
+import org.gradle.internal.execution.steps.StoreExecutionStateStep;
 import org.gradle.internal.execution.steps.TimeoutStep;
+import org.gradle.internal.execution.steps.ValidateStep;
 import org.gradle.internal.execution.timeout.TimeoutHandler;
 import org.gradle.internal.fingerprint.FileCollectionFingerprint;
 import org.gradle.internal.fingerprint.FileCollectionFingerprinterRegistry;
 import org.gradle.internal.fingerprint.FileCollectionSnapshotter;
 import org.gradle.internal.fingerprint.impl.OutputFileCollectionFingerprinter;
+import org.gradle.internal.fingerprint.overlap.OverlappingOutputDetector;
 import org.gradle.internal.hash.ClassLoaderHierarchyHasher;
 import org.gradle.internal.id.UniqueId;
 import org.gradle.internal.instantiation.InstantiatorFactory;
@@ -240,43 +242,37 @@ public class DefaultDependencyManagementServices implements DependencyManagement
          *
          * Currently used for running artifact transformations in buildscript blocks.
          */
-        WorkExecutor<AfterPreviousExecutionContext, CachingResult> createWorkExecutor(
-            ExecutionStateChangeDetector changeDetector,
+        WorkExecutor<ExecutionRequestContext, CachingResult> createWorkExecutor(
+            BuildOperationExecutor buildOperationExecutor,
             ClassLoaderHierarchyHasher classLoaderHierarchyHasher,
+            ExecutionStateChangeDetector changeDetector,
             ListenerManager listenerManager,
+            OverlappingOutputDetector overlappingOutputDetector,
             TimeoutHandler timeoutHandler,
             ValueSnapshotter valueSnapshotter
         ) {
             OutputChangeListener outputChangeListener = listenerManager.getBroadcaster(OutputChangeListener.class);
             // TODO: Figure out how to get rid of origin scope id in snapshot outputs step
             UniqueId fixedUniqueId = UniqueId.from("dhwwyv4tqrd43cbxmdsf24wquu");
+            // @formatter:off
             return new DefaultWorkExecutor<>(
-                new CaptureStateBeforeExecutionStep(classLoaderHierarchyHasher, valueSnapshotter,
-                    new NoOpCachingStateStep(
-                        new ResolveChangesStep<>(changeDetector,
-                            new SkipUpToDateStep<>(
-                                new BroadcastChangingOutputsStep<>(outputChangeListener,
-                                    new StoreSnapshotsStep<>(
-                                        new SnapshotOutputsStep<>(fixedUniqueId,
-                                            new CreateOutputsStep<>(
-                                                new CatchExceptionStep<>(
-                                                    new TimeoutStep<>(timeoutHandler,
-                                                        new ResolveInputChangesStep<>(
-                                                            new CleanupOutputsStep<>(
-                                                                new ExecuteStep<InputChangesContext>()
-                                                            )
-                                                        )
-                                                    )
-                                                )
-                                            )
-                                        )
-                                    )
-                                )
-                            )
-                        )
-                    )
-                )
-            );
+                new LoadExecutionStateStep<>(
+                new ValidateStep<>(
+                new CaptureStateBeforeExecutionStep(buildOperationExecutor, classLoaderHierarchyHasher, valueSnapshotter, overlappingOutputDetector,
+                new NoOpCachingStateStep(
+                new ResolveChangesStep<>(changeDetector,
+                new SkipUpToDateStep<>(
+                new BroadcastChangingOutputsStep<>(outputChangeListener,
+                new StoreExecutionStateStep<>(
+                new SnapshotOutputsStep<>(buildOperationExecutor, fixedUniqueId,
+                new CreateOutputsStep<>(
+                new CatchExceptionStep<>(
+                new TimeoutStep<>(timeoutHandler,
+                new ResolveInputChangesStep<>(
+                new CleanupOutputsStep<>(
+                new ExecuteStep<>(
+            ))))))))))))))));
+            // @formatter:on
         }
     }
 
@@ -332,13 +328,8 @@ public class DefaultDependencyManagementServices implements DependencyManagement
                 }
 
                 @Override
-                public OriginMetadata getOriginMetadata() {
-                    return result.getOriginMetadata();
-                }
-
-                @Override
-                public boolean isReused() {
-                    return result.isReused();
+                public Optional<OriginMetadata> getReusedOutputOriginMetadata() {
+                    return result.getReusedOutputOriginMetadata();
                 }
 
                 @Override
@@ -371,16 +362,17 @@ public class DefaultDependencyManagementServices implements DependencyManagement
             return new MutableCachingTransformationWorkspaceProvider(workspaceProvider);
         }
 
-        TransformerInvoker createTransformerInvoker(WorkExecutor<AfterPreviousExecutionContext, CachingResult> workExecutor,
-                                                    FileSystemSnapshotter fileSystemSnapshotter,
-                                                    ImmutableCachingTransformationWorkspaceProvider transformationWorkspaceProvider,
-                                                    ArtifactTransformListener artifactTransformListener,
-                                                    FileCollectionFactory fileCollectionFactory,
-                                                    FileCollectionSnapshotter fileCollectionSnapshotter,
-                                                    ProjectFinder projectFinder,
-                                                    BuildOperationExecutor buildOperationExecutor
+        TransformerInvocationFactory createTransformerInvocationFactory(
+            WorkExecutor<ExecutionRequestContext, CachingResult> workExecutor,
+            FileSystemSnapshotter fileSystemSnapshotter,
+            ImmutableCachingTransformationWorkspaceProvider transformationWorkspaceProvider,
+            ArtifactTransformListener artifactTransformListener,
+            FileCollectionFactory fileCollectionFactory,
+            FileCollectionSnapshotter fileCollectionSnapshotter,
+            ProjectFinder projectFinder,
+            BuildOperationExecutor buildOperationExecutor
         ) {
-            return new DefaultTransformerInvoker(
+            return new DefaultTransformerInvocationFactory(
                 workExecutor,
                 fileSystemSnapshotter,
                 artifactTransformListener,
@@ -393,9 +385,10 @@ public class DefaultDependencyManagementServices implements DependencyManagement
         }
 
         TransformationRegistrationFactory createTransformationRegistrationFactory(
+            BuildOperationExecutor buildOperationExecutor,
             IsolatableFactory isolatableFactory,
             ClassLoaderHierarchyHasher classLoaderHierarchyHasher,
-            TransformerInvoker transformerInvoker,
+            TransformerInvocationFactory transformerInvocationFactory,
             ValueSnapshotter valueSnapshotter,
             ProjectStateRegistry projectStateRegistry,
             DomainObjectContext domainObjectContext,
@@ -406,9 +399,10 @@ public class DefaultDependencyManagementServices implements DependencyManagement
             FileCollectionFactory fileCollectionFactory
         ) {
             return new DefaultTransformationRegistrationFactory(
+                buildOperationExecutor,
                 isolatableFactory,
                 classLoaderHierarchyHasher,
-                transformerInvoker,
+                transformerInvocationFactory,
                 valueSnapshotter,
                 fileCollectionFactory,
                 fileCollectionFingerprinterRegistry,

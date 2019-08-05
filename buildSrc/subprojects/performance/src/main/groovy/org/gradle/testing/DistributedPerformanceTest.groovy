@@ -23,6 +23,7 @@ import groovy.transform.CompileStatic
 import groovy.transform.TypeChecked
 import groovy.transform.TypeCheckingMode
 import groovyx.net.http.ContentType
+import groovyx.net.http.HttpResponseDecorator
 import groovyx.net.http.HttpResponseException
 import groovyx.net.http.RESTClient
 import org.apache.commons.io.input.CloseShieldInputStream
@@ -269,7 +270,20 @@ class DistributedPerformanceTest extends ReportGenerationPerformanceTest {
     @TypeChecked(TypeCheckingMode.SKIP)
     private Map httpGet(Map params) {
         try {
-            return client.get(params).data
+            HttpResponseDecorator resp = client.get(params)
+            if (ContentType.JSON.toString() == resp.getContentType()) {
+                return resp.data
+            } else {
+                // Sometimes, TC returns text/html page
+                // https://github.com/gradle/gradle-private/issues/1359
+                System.err.println("""
+Got TeamCity HTML response when accepting application/json:
+
+${resp.getStatusLine()}
+${resp.data}
+""")
+                return [state: 'unknown']
+            }
         } catch (HttpResponseException ex) {
             println("Get response ${ex.response.status}\n${ex.response.data}")
             throw ex
@@ -311,12 +325,21 @@ class DistributedPerformanceTest extends ReportGenerationPerformanceTest {
 
     @TypeChecked(TypeCheckingMode.SKIP)
     private boolean checkResult(String jobId) {
-        Map response = httpGet(path: "builds/id:$jobId", requestContentType: ContentType.JSON)
-        boolean finished = response.state == "finished"
-        if (finished) {
-            collectPerformanceTestResults(response, jobId)
+        try {
+            Map response = httpGet(path: "builds/id:$jobId", requestContentType: ContentType.JSON)
+            boolean finished = response.state == "finished"
+            if (finished) {
+                collectPerformanceTestResults(response, jobId)
+            }
+            finished
+        } catch (HttpResponseException e) {
+            if (e.response.status == 404) {
+                collectErrorResult(jobId, "Get 404 status when fetching build data")
+                return true
+            } else {
+                throw e
+            }
         }
-        finished
     }
 
     @TypeChecked(TypeCheckingMode.SKIP)
@@ -327,8 +350,12 @@ class DistributedPerformanceTest extends ReportGenerationPerformanceTest {
             fireTestListener(testSuite, response)
         } catch (e) {
             e.printStackTrace(System.err)
-            finishedBuilds.put(jobId, new ScenarioResult(name: scheduledBuilds.get(jobId).id, buildResult: response, testSuite: testSuiteWithFailureText(response.statusText)))
+            collectErrorResult(jobId, response.statusText, response)
         }
+    }
+
+    private void collectErrorResult(String jobId, String failureText, Map response = [:]) {
+        finishedBuilds.put(jobId, new ScenarioResult(name: scheduledBuilds.get(jobId).id, buildResult: response, testSuite: testSuiteWithFailureText(failureText)))
     }
 
     private static JUnitTestSuite testSuiteWithFailureText(String failureText) {
