@@ -14,19 +14,18 @@
  * limitations under the License.
  */
 
-package org.gradle.api.internal.file.delete
+package org.gradle.internal.file
 
 import org.gradle.test.fixtures.file.TestFile
 import org.gradle.util.Requires
 import org.gradle.util.TestPrecondition
+import org.gradle.util.WindowsSymbolicLinkUtil
 
-import static org.gradle.api.internal.file.TestFiles.fileSystem
-
-@Requires(TestPrecondition.UNIX_DERIVATIVE)
-class UnixDerivativeSymlinkDeleterTest extends AbstractSymlinkDeleterTest {
+@Requires(TestPrecondition.WINDOWS)
+class WindowsSymbolicLinkDeleterTest extends AbstractSymlinkDeleterTest {
     @Override
     protected void createSymbolicLink(File link, TestFile target) {
-        fileSystem().createSymbolicLink(link, target)
+        WindowsSymbolicLinkUtil.createWindowsSymbolicLink(link, target)
     }
 
     @Override
